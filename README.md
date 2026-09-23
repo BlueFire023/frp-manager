@@ -26,7 +26,7 @@ Download the script into your frp directory and start the menu:
 
 ```bash
 sudo mkdir -p /opt/frp && cd /opt/frp
-sudo curl -fsSLO https://raw.githubusercontent.com/YOUR_USER/frp-manager/main/frp-manager.sh
+sudo curl -fsSLO https://raw.githubusercontent.com/BlueFire023/frp-manager/main/frp-manager.sh
 sudo chmod +x frp-manager.sh
 sudo ./frp-manager.sh
 ```
@@ -37,7 +37,7 @@ You can also pipe the script straight into Bash. In that case the **current dire
 
 ```bash
 cd /opt/frp
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/frp-manager/main/frp-manager.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/BlueFire023/frp-manager/main/frp-manager.sh | sudo bash
 ```
 
 Pass commands after `-s --`, e.g. `... | sudo bash -s -- update server`.

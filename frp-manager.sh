@@ -18,7 +18,7 @@ KEEP_BACKUP=true
 
 # Where to fetch the systemd unit files if they are not found locally.
 # The script tries <URL>/systemd/<name>.service and <URL>/<name>.service.
-SERVICE_SOURCE_URL="https://raw.githubusercontent.com/YOUR_USER/frp-manager/main"
+SERVICE_SOURCE_URL="https://raw.githubusercontent.com/BlueFire023/frp-manager/main"
 # ------------------------------------------------------------
 
 REPO="fatedier/frp"
