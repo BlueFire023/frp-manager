@@ -48,29 +48,35 @@ Pass commands after `-s --`, e.g. `... | sudo bash -s -- update server`.
 
 ### Interactive menu
 
+The menu only shows what is installed on the current machine – on a client you'll only see `frpc`, on a server only `frps`:
+
 ```
 ===== frp manager =====
   frp directory:  /opt/frp
   latest release: 0.71.0
 
   frpc   0.61.0          service: active, enabled       update available
-  frps   not installed   service: not installed
 
-  1) Update frpc                 4) Install / repair frpc service
-  2) Update frps                 5) Install / repair frps service
-  3) Install specific version    6) Remove a service
+  1) Update frpc
+  2) Install specific frpc version
+  3) Repair frpc service
+  4) Remove frpc service
   q) Quit
 ```
+
+If no frp installation is found, the menu offers to install either `frpc` or `frps`.
 
 ### Commands
 
 ```bash
 ./frp-manager.sh                                  # interactive menu
 ./frp-manager.sh status                           # versions, service state, updates
-./frp-manager.sh update          client|server    # install or update the binary
+./frp-manager.sh update         [client|server]   # install or update the binary
 ./frp-manager.sh install-service client|server    # install and enable the systemd service
-./frp-manager.sh remove-service  client|server    # stop, disable and remove the service
+./frp-manager.sh remove-service [client|server]   # stop, disable and remove the service
 ```
+
+`client` / `server` can be omitted if only one of them is installed – `sudo ./frp-manager.sh update` just updates whatever is there.
 
 | Option            | Description                                                   |
 | ----------------- | ------------------------------------------------------------- |
@@ -102,7 +108,7 @@ sudo ./frp-manager.sh install-service client
 ### Automatic updates (cron)
 
 ```cron
-0 4 * * 1  /opt/frp/frp-manager.sh update client -y >> /var/log/frp-manager.log 2>&1
+0 4 * * 1  /opt/frp/frp-manager.sh update -y >> /var/log/frp-manager.log 2>&1
 ```
 
 ## systemd services

@@ -1,11 +1,21 @@
 [Unit]
-Description=frp server
-After=network.target
+Description=frp client
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
+User=frp
+Group=frp
 ExecStart=/opt/frp/frps -c /opt/frp/frps.toml
 Restart=always
+RestartSec=5s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target

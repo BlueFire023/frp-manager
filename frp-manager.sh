@@ -46,9 +46,11 @@ frp-manager.sh – install, update and manage frp (frpc / frps)
 Usage:
   frp-manager.sh                                   Interactive menu
   frp-manager.sh status                            Versions, service state, updates
-  frp-manager.sh update          client|server     Install or update the binary
+  frp-manager.sh update         [client|server]    Install or update the binary
   frp-manager.sh install-service client|server     Install and enable the systemd service
-  frp-manager.sh remove-service  client|server     Stop, disable and remove the service
+  frp-manager.sh remove-service [client|server]    Stop, disable and remove the service
+
+  (client|server can be omitted if only one of them is installed)
 
 Options:
   --version X.Y.Z   Use a specific frp version instead of the latest one
@@ -325,13 +327,29 @@ do_remove_service() {
     ok "Service $bin removed."
 }
 
+# is_installed <mode>  -> binary present or a systemd unit exists
+is_installed() {
+    local state
+    [[ -x "$FRP_DIR/$(bin_of "$1")" ]] && return 0
+    state="$(service_state "$1")"
+    [[ "$state" != "not installed" && "$state" != "no systemd" ]]
+}
+
+installed_modes() {
+    local m
+    for m in client server; do
+        if is_installed "$m"; then echo "$m"; fi
+    done
+}
+
 show_status() {
-    local mode bin ver state upd
+    local mode bin ver state upd found=false
     fetch_latest || warn "Could not reach GitHub."
     echo "  frp directory:  $FRP_DIR"
     echo "  latest release: ${LATEST:-unknown}"
     echo
-    for mode in client server; do
+    for mode in $(installed_modes); do
+        found=true
         bin="$(bin_of "$mode")"
         ver="$(installed_version "$mode")"
         state="$(service_state "$mode")"
@@ -339,12 +357,18 @@ show_status() {
         if [[ -n "$ver" && -n "$LATEST" && "$ver" != "$LATEST" ]]; then
             upd="${C_Y}update available${C_0}"
         fi
-        printf "  %-5s  %-14s  service: %-22s %s\n" "$bin" "${ver:-not installed}" "$state" "$upd"
+        printf "  %-5s  %-14s  service: %-22s %s\n" "$bin" "${ver:-binary missing}" "$state" "$upd"
     done
+    [[ "$found" == true ]] || echo "  No frp installation found in $FRP_DIR."
 }
 
-# update_to_version <mode> <version> (runs inside run_action's subshell)
-update_to_version() { TARGET_VERSION="$2"; FORCE=true; do_update "$1"; }
+# update_to_version <mode> [version]  (asks for the version if none is given)
+update_to_version() {
+    local ver="${2:-}"
+    [[ -n "$ver" ]] || ver="$(prompt "Version (e.g. 0.61.0): ")"
+    TARGET_VERSION="${ver#v}"; FORCE=true
+    do_update "$1"
+}
 
 # Runs an action in a subshell so a failure doesn't end the menu
 run_action() {
@@ -352,8 +376,36 @@ run_action() {
     read -r -p "Press Enter to continue … " _ </dev/tty || true
 }
 
+# Menu entries: label, function, mode
+MENU_LABEL=(); MENU_FN=(); MENU_MODE=()
+add_entry() { MENU_LABEL+=("$1"); MENU_FN+=("$2"); MENU_MODE+=("$3"); }
+
+build_menu() {
+    local mode bin modes
+    MENU_LABEL=(); MENU_FN=(); MENU_MODE=()
+    modes="$(installed_modes)"
+
+    if [[ -z "$modes" ]]; then
+        add_entry "Install frpc (client)" do_install_service client
+        add_entry "Install frps (server)" do_install_service server
+        return
+    fi
+
+    for mode in $modes; do
+        bin="$(bin_of "$mode")"
+        add_entry "Update $bin"                   do_update         "$mode"
+        add_entry "Install specific $bin version" update_to_version "$mode"
+        if [[ "$(service_state "$mode")" == "not installed" ]]; then
+            add_entry "Install $bin service"      do_install_service "$mode"
+        else
+            add_entry "Repair $bin service"       do_install_service "$mode"
+            add_entry "Remove $bin service"       do_remove_service  "$mode"
+        fi
+    done
+}
+
 menu() {
-    local choice mode ver
+    local choice i
     has_tty || die "No terminal available for the interactive menu. See --help."
     [[ $EUID -eq 0 ]] || warn "Not running as root – only the status is available. Restart with sudo."
 
@@ -361,27 +413,22 @@ menu() {
         echo
         echo "${C_B}===== frp manager =====${C_0}"
         show_status
-        cat <<'EOF'
-
-  1) Update frpc                 4) Install / repair frpc service
-  2) Update frps                 5) Install / repair frps service
-  3) Install specific version    6) Remove a service
-  q) Quit
-
-EOF
+        build_menu
+        echo
+        for i in "${!MENU_LABEL[@]}"; do
+            printf "  %d) %s\n" "$((i + 1))" "${MENU_LABEL[$i]}"
+        done
+        echo "  q) Quit"
+        echo
         choice="$(prompt "Select: ")"
-        case "$choice" in
-            1) run_action do_update client ;;
-            2) run_action do_update server ;;
-            3) mode="$(pick_mode)"
-               ver="$(prompt "Version (e.g. 0.61.0): ")"
-               run_action update_to_version "$mode" "${ver#v}" ;;
-            4) run_action do_install_service client ;;
-            5) run_action do_install_service server ;;
-            6) mode="$(pick_mode)"; run_action do_remove_service "$mode" ;;
-            q|Q) exit 0 ;;
-            *) warn "Invalid choice." ;;
-        esac
+        if [[ "$choice" =~ ^[qQ]$ ]]; then
+            exit 0
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#MENU_LABEL[@]} )); then
+            i=$((choice - 1))
+            run_action "${MENU_FN[$i]}" "${MENU_MODE[$i]}"
+        else
+            warn "Invalid choice."
+        fi
     done
 }
 
@@ -428,6 +475,15 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 # A mode without a command keeps the old frp-update.sh behaviour
 [[ -z "$CMD" && -n "$MODE" ]] && CMD="update"
 
+# No mode given: use the installed one if it's unambiguous, otherwise ask
+if [[ "$CMD" =~ ^(update|remove-service)$ && -z "$MODE" ]]; then
+    mapfile -t _modes < <(installed_modes)
+    if [[ ${#_modes[@]} -eq 1 ]]; then
+        MODE="${_modes[0]}"
+    elif [[ ${#_modes[@]} -eq 0 && "$CMD" == remove-service ]]; then
+        die "No frp installation found in $FRP_DIR."
+    fi
+fi
 if [[ "$CMD" =~ ^(update|install-service|remove-service)$ && -z "$MODE" ]]; then
     has_tty && [[ "$ASSUME_YES" == false ]] || die "Please specify 'client' or 'server'."
     MODE="$(pick_mode)"
