@@ -1,5 +1,6 @@
 [Unit]
 Description=frp client
+Documentation=https://github.com/fatedier/frp
 Wants=network-online.target
 After=network-online.target
 
@@ -7,15 +8,18 @@ After=network-online.target
 Type=simple
 User=frp
 Group=frp
-ExecStart=/opt/frp/frpc -c /opt/frp/frpc.toml
+ExecStart=/opt/frp/frpc -c /opt/frp/config/frpc.toml
 Restart=always
 RestartSec=5s
 
-# Hardening
+# Hardening: runs as the unprivileged "frp" user. The whole file system is
+# read-only for the service, except the config directory, which frpc needs
+# to write to (store file, config changes from the admin UI).
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/opt/frp/config
 
 [Install]
 WantedBy=multi-user.target

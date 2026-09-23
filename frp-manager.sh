@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # ------------------------- Settings -------------------------
-# Directory containing frpc / frps and their configs.
+# Directory containing frpc / frps (configs live in the config/ subdirectory).
 # Empty = directory of this script (or /opt/frp if the script lives in a bin dir).
 # Can also be set via the FRP_DIR environment variable or --dir.
 FRP_DIR="${FRP_DIR:-}"
@@ -18,7 +18,7 @@ KEEP_BACKUP=true
 
 # Where to fetch the systemd unit files if they are not found locally.
 # The script tries <URL>/systemd/<name>.service and <URL>/<name>.service.
-SERVICE_SOURCE_URL="https://raw.githubusercontent.com/BlueFire023/frp-manager/main"
+SERVICE_SOURCE_URL="https://raw.githubusercontent.com/YOUR_USER/frp-manager/main"
 # ------------------------------------------------------------
 
 REPO="fatedier/frp"
@@ -245,8 +245,83 @@ find_service_file() {
     return 1
 }
 
+# ---------- Config helpers ----------
+# Prints the store path from a frp TOML config (store.path = … or [store] path = …)
+get_store_path() {
+    awk '
+        /^[ \t]*\[/ { s = $0; gsub(/[][ \t]/, "", s); next }
+        (s == "" && /^[ \t]*store\.path[ \t]*=/) || (s == "store" && /^[ \t]*path[ \t]*=/) {
+            v = $0; sub(/^[^=]*=[ \t]*/, "", v); print v; exit
+        }
+    ' "$1" | sed -e 's/[ \t]*#.*$//' -e "s/^[\"']//" -e "s/[\"'][ \t]*\$//"
+}
+
+# set_store_path <config> <new path>  – rewrites the store path in place
+set_store_path() {
+    local tmp; tmp="$(mktemp -p "$TMP_ROOT")"
+    awk -v new="$2" '
+        /^[ \t]*\[/ { s = $0; gsub(/[][ \t]/, "", s) }
+        (s == "" && /^[ \t]*store\.path[ \t]*=/) || (s == "store" && /^[ \t]*path[ \t]*=/) {
+            match($0, /^[ \t]*[^ \t=]+/); print substr($0, 1, RLENGTH) " = \"" new "\""; next
+        }
+        { print }
+    ' "$1" > "$tmp"
+    cat "$tmp" > "$1"   # keeps owner and permissions of the original file
+}
+
+# Moves an old config (and its store file) from $FRP_DIR into the config
+# directory and makes the store path absolute.
+migrate_config() {
+    local bin="$1" cfg="$2" cfg_dir old store resolved target
+    cfg_dir="$(dirname "$cfg")"
+    old="$FRP_DIR/$bin.toml"
+
+    if [[ ! -f "$cfg" && -f "$old" && "$old" != "$cfg" ]]; then
+        log "Found old config $old"
+        if ask "Move it to $cfg?" y; then
+            mv "$old" "$cfg"
+            ok "Moved config to $cfg"
+        fi
+    fi
+    [[ -f "$cfg" ]] || return 0
+
+    store="$(get_store_path "$cfg")"
+    [[ -n "$store" ]] || return 0
+
+    # Resolve relative paths the way the old setup most likely used them
+    case "$store" in
+        /*) resolved="$store" ;;
+        *)  resolved="$FRP_DIR/${store#./}" ;;
+    esac
+    target="$cfg_dir/$(basename "$store")"
+    [[ "$resolved" == "$target" && "$store" == "$target" ]] && return 0
+
+    log "Store path in $cfg: $store"
+    ask "Move the store to $target and update the config?" y || return 0
+    if [[ -f "$resolved" && "$resolved" != "$target" ]]; then
+        mv "$resolved" "$target"
+        ok "Moved store file to $target"
+    fi
+    set_store_path "$cfg" "$target"
+    ok "store.path set to $target"
+}
+
+# Directory layout and permissions:
+#   $FRP_DIR          root:root 755   binaries, backups, this script
+#   $FRP_DIR/config   frp:frp   700   config + store (writable by the service)
+fix_permissions() {
+    local cfg_dir="$1" user="$2" group="$3"
+    chown root:root "$FRP_DIR"
+    chmod 755 "$FRP_DIR"
+    mkdir -p "$cfg_dir"
+    chown -R "$user:$group" "$cfg_dir"
+    chmod 700 "$cfg_dir"
+    find "$cfg_dir" -type f -exec chmod 600 {} +
+    log "Permissions set: $FRP_DIR (root, 755), $cfg_dir ($user, 700)"
+}
+
 do_install_service() {
-    local mode="$1" bin src unit new_unit user group cfg saved_yes
+    local mode="$1" bin src unit new_unit user group cfg saved_yes was_active=false
     bin="$(bin_of "$mode")"
     unit="/etc/systemd/system/$bin.service"
     require_root
@@ -273,34 +348,48 @@ do_install_service() {
         ask "Overwrite it?" n || { log "Keeping the existing unit."; cp "$unit" "$new_unit"; }
     fi
 
-    # Service user
+    # Service user (see the directory layout above)
     user="$(sed -n 's/^User=//p' "$new_unit" | head -n1)"
     group="$(sed -n 's/^Group=//p' "$new_unit" | head -n1)"
+    user="${user:-root}"
     group="${group:-$user}"
-    if [[ -n "$user" && "$user" != root ]]; then
-        if ! id -u "$user" >/dev/null 2>&1; then
-            log "Creating system user '$user'"
-            useradd --system --no-create-home --shell /usr/sbin/nologin "$user"
-        fi
-        getent group "$group" >/dev/null || groupadd --system "$group"
+    if [[ "$user" != root ]] && ! id -u "$user" >/dev/null 2>&1; then
+        log "Creating system user '$user'"
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$user"
+    fi
+    getent group "$group" >/dev/null || groupadd --system "$group"
+
+    cfg="$(sed -n 's/^ExecStart=.* -c \([^ ]*\).*/\1/p' "$new_unit" | head -n1)"
+    cfg="${cfg:-$FRP_DIR/config/$bin.toml}"
+
+    # Stop the running service before moving files around
+    if systemctl is-active --quiet "$bin" 2>/dev/null; then
+        was_active=true
+        log "Stopping service $bin"
+        systemctl stop "$bin"
     fi
 
-    # Config permissions: readable by the service, not by everyone (contains the token)
-    cfg="$(sed -n 's/^ExecStart=.* -c \([^ ]*\).*/\1/p' "$new_unit" | head -n1)"
-    cfg="${cfg:-$FRP_DIR/$bin.toml}"
-    if [[ -f "$cfg" ]]; then
-        chown "root:${group:-root}" "$cfg"
-        chmod 640 "$cfg"
-        log "Config permissions set: $cfg (root:${group:-root}, 640)"
-    else
-        warn "Config $cfg not found – create it before starting the service."
-    fi
+    mkdir -p "$(dirname "$cfg")"
+    migrate_config "$bin" "$cfg"
+    fix_permissions "$(dirname "$cfg")" "$user" "$group"
 
     install -m 0644 "$new_unit" "$unit"
     systemctl daemon-reload
     ok "Installed $unit"
 
-    if [[ -f "$cfg" ]] && ask "Enable and (re)start $bin now?" y; then
+    if [[ ! -f "$cfg" ]]; then
+        warn "Config $cfg not found – create it, then run: systemctl enable --now $bin"
+        return 0
+    fi
+
+    if "$FRP_DIR/$bin" verify -c "$cfg" >/dev/null 2>&1; then
+        log "Config syntax OK"
+    else
+        warn "'$bin verify' reports a problem with $cfg:"
+        "$FRP_DIR/$bin" verify -c "$cfg" || true
+    fi
+
+    if ask "Enable and (re)start $bin now?" y; then
         systemctl enable "$bin" >/dev/null 2>&1
         systemctl restart "$bin"
         sleep 2
@@ -309,6 +398,8 @@ do_install_service() {
         else
             die "Service $bin failed to start. Logs: journalctl -u $bin -n 50"
         fi
+    elif [[ "$was_active" == true ]]; then
+        warn "$bin was running before and is now stopped. Start it with: systemctl start $bin"
     fi
 }
 
@@ -346,6 +437,7 @@ show_status() {
     local mode bin ver state upd found=false
     fetch_latest || warn "Could not reach GitHub."
     echo "  frp directory:  $FRP_DIR"
+    echo "  config dir:     $FRP_DIR/config"
     echo "  latest release: ${LATEST:-unknown}"
     echo
     for mode in $(installed_modes); do

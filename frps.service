@@ -1,5 +1,6 @@
 [Unit]
-Description=frp client
+Description=frp server
+Documentation=https://github.com/fatedier/frp
 Wants=network-online.target
 After=network-online.target
 
@@ -7,15 +8,21 @@ After=network-online.target
 Type=simple
 User=frp
 Group=frp
-ExecStart=/opt/frp/frps -c /opt/frp/frps.toml
+ExecStart=/opt/frp/frps -c /opt/frp/config/frps.toml
 Restart=always
 RestartSec=5s
+LimitNOFILE=1048576
 
-# Hardening
+# Uncomment if frps binds ports below 1024 directly (e.g. vhostHTTPPort = 80)
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Hardening: runs as the unprivileged "frp" user. The whole file system is
+# read-only for the service, except the config directory.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/opt/frp/config
 
 [Install]
 WantedBy=multi-user.target
